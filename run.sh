@@ -309,8 +309,21 @@ Please provide more information:
 
         log_info "Preparing git branch..."
 
+        # Ensure we have latest from remote and force-sync to avoid divergent branch issues
+        git fetch origin --quiet
         git checkout "$BASE_BRANCH" --quiet
-        git pull --quiet origin "$BASE_BRANCH"
+
+        # Check for uncommitted changes that could contaminate the PR
+        if [ -n "$(git status --porcelain)" ]; then
+            log_error "Working tree is not clean. Uncommitted changes detected:"
+            git status --short
+            log_error "Please commit or stash changes before running this script."
+            exit 1
+        fi
+
+        # Force reset to origin to ensure we're working with latest code
+        git reset --hard "origin/$BASE_BRANCH" --quiet
+        log_success "Synced to latest origin/$BASE_BRANCH"
 
         # Clean up any existing PR and branch for this issue
         log_info "Checking for existing PR for branch ${BRANCH_NAME}..."
@@ -603,7 +616,19 @@ Please provide more information or clarify the requirements so this can be addre
 
         if [ -n "$GIT_STATUS" ]; then
             log_warning "Uncommitted changes detected, creating commit..."
-            git add -A
+
+            # Add all changes EXCEPT .env files which may contain secrets
+            git add -A ':!.env' ':!.env.*' ':!.env.local' ':!.env.production'
+
+            # Verify we're not about to commit .env files
+            STAGED_FILES=$(git diff --cached --name-only)
+            if echo "$STAGED_FILES" | grep -qE '^\.env|/\.env'; then
+                log_error "Refusing to commit .env files:"
+                echo "$STAGED_FILES" | grep -E '^\.env|/\.env'
+                log_error "Please review and remove these files from the working tree."
+                exit 1
+            fi
+
             git commit -m "fix: Address issue #${ISSUE_NUMBER} - ${ISSUE_TITLE}
 
 Auto-generated fix by Claude Code.
