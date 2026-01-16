@@ -100,11 +100,11 @@ if [ -z "$TRIAGE_JSON" ] || ! echo "$TRIAGE_JSON" | jq -e '.classification' &>/d
     }'
 fi
 
-# Parse results
-CLASSIFICATION=$(echo "$TRIAGE_JSON" | jq -r '.classification // "NEEDS_CLARIFICATION"')
-CONFIDENCE=$(echo "$TRIAGE_JSON" | jq -r '.confidence // 0.5')
-SUMMARY=$(echo "$TRIAGE_JSON" | jq -r '.summary // "No summary"')
-COMPLEXITY=$(echo "$TRIAGE_JSON" | jq -r '.estimated_complexity // "unknown"')
+# Parse results - ensure we only get the first line/value in case of duplicates
+CLASSIFICATION=$(echo "$TRIAGE_JSON" | jq -r '.classification // "NEEDS_CLARIFICATION"' | head -1)
+CONFIDENCE=$(echo "$TRIAGE_JSON" | jq -r '.confidence // 0.5' | head -1)
+SUMMARY=$(echo "$TRIAGE_JSON" | jq -r '.summary // "No summary"' | head -1)
+COMPLEXITY=$(echo "$TRIAGE_JSON" | jq -r '.estimated_complexity // "unknown"' | head -1)
 
 agent_log SUCCESS "Classification: $CLASSIFICATION (confidence: $CONFIDENCE)"
 agent_log INFO "Summary: $SUMMARY"

@@ -112,17 +112,19 @@ export BASE_BRANCH
 # STAGE 1: TRIAGE
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ! run_agent "triage"; then
+set +e
+run_agent "triage"
+TRIAGE_RESULT=$?
+set -e
+
+if [ $TRIAGE_RESULT -eq 1 ]; then
     FAILURE_REASON="Triage agent failed"
     save_pipeline_state "failed" "triage" "$FAILURE_REASON"
     exit 1
-fi
-
-# Check if triage approved
-TRIAGE_PROCEED=$(load_agent_state "${ISSUE_RUN_DIR}/triage.state.json" "should_proceed")
-if [ "$TRIAGE_PROCEED" != "true" ]; then
+elif [ $TRIAGE_RESULT -eq 2 ]; then
+    # Triage indicated skip (e.g., NEEDS_HUMAN, NEEDS_CLARIFICATION)
     CLASSIFICATION=$(load_agent_state "${ISSUE_RUN_DIR}/triage.state.json" "classification")
-    agent_log WARNING "Triage did not approve for auto-fix: $CLASSIFICATION"
+    agent_log WARNING "Triage classified as: $CLASSIFICATION (not auto-fixable)"
     save_pipeline_state "skipped" "triage" "Issue classified as: $CLASSIFICATION"
     exit 2
 fi
@@ -131,10 +133,19 @@ fi
 # STAGE 2: RESEARCH
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ! run_agent "research"; then
+set +e
+run_agent "research"
+RESEARCH_RESULT=$?
+set -e
+
+if [ $RESEARCH_RESULT -eq 1 ]; then
     FAILURE_REASON="Research agent failed"
     save_pipeline_state "failed" "research" "$FAILURE_REASON"
     exit 1
+elif [ $RESEARCH_RESULT -eq 2 ]; then
+    agent_log WARNING "Research agent indicated skip"
+    save_pipeline_state "skipped" "research" "Research could not be completed"
+    exit 2
 fi
 
 # Check research confidence
