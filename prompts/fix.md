@@ -36,41 +36,11 @@ Implement the fix. The research has been done - you know exactly what to change.
 
 2. **FOLLOW PATTERNS** - Use the exact patterns identified in research. Match existing code style.
 
-3. **ONE COMMIT** - Make all changes and create ONE well-documented commit.
+3. **DO NOT COMMIT** - Only make file changes. Do NOT run git commit. The pipeline will handle commits after review.
 
 4. **NO EXPLORATION** - The research is done. Don't search or read files unless absolutely necessary. Trust the research.
 
-5. **STOP IF WRONG** - If the research seems incorrect or incomplete, create SKIP_ISSUE.txt and explain why.
-
-### Commit Message Format
-
-```
-fix: Brief description (#${ISSUE_NUMBER})
-
-Files Changed:
-- path/to/file.ts: What was changed
-
-Root Cause:
-What was causing the issue
-
-Fix Applied:
-What changes were made and why
-
-Confidence Assessment:
-- Overall: X.XX
-- Root cause identification: X.XX
-- Solution correctness: X.XX
-- Completeness: X.XX
-- No regressions: X.XX
-
-Key Caveats:
-- Any uncertainties or limitations
-
-Testing Recommendations:
-- What should be tested
-
-Co-Authored-By: Claude <noreply@anthropic.com>
-```
+5. **STOP IF WRONG** - If the research seems incorrect or incomplete, output fix_applied: false and explain why.
 
 ## Output
 

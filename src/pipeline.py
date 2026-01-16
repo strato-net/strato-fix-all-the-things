@@ -89,6 +89,12 @@ class Pipeline:
                     self.state.failure_reason = f"Issue classified as: {classification}"
                     break
 
+                # Fix skip means no changes made - nothing to review
+                if agent_cls.name == "fix":
+                    self.state.status = PipelineStatus.SKIPPED
+                    self.state.failure_reason = "Fix agent made no changes"
+                    break
+
                 # Review skip means blocked
                 if agent_cls.name == "review":
                     self.state.status = PipelineStatus.BLOCKED

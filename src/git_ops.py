@@ -103,6 +103,20 @@ class GitOps:
         unstaged = self._run("diff", "--name-only", check=False)
         return bool(staged or unstaged)
 
+    def has_unpushed_commits(self, remote: str = "origin", branch: str | None = None) -> bool:
+        """Check if there are commits that haven't been pushed to remote."""
+        if not branch:
+            branch = self.current_branch()
+        # Check if remote branch exists
+        remote_ref = f"{remote}/{branch}"
+        result = self._run("rev-parse", "--verify", remote_ref, check=False)
+        if not result:
+            # Remote branch doesn't exist, so we have unpushed commits if we have any commits
+            return True
+        # Compare local and remote
+        ahead = self._run("rev-list", "--count", f"{remote_ref}..HEAD", check=False)
+        return int(ahead or 0) > 0
+
     def sync_to_remote(self, remote: str, branch: str) -> None:
         """Sync local branch to match remote exactly."""
         self.fetch(remote)

@@ -87,15 +87,39 @@ def run_claude(
 def extract_json_from_output(output: str, required_field: str = "classification") -> dict[str, Any] | None:
     """Extract JSON from Claude's stream-json output.
 
-    Looks for JSON blocks in markdown code fences with the required field.
+    Parses stream-json lines to find assistant message text containing JSON blocks.
     """
-    # Unescape JSON-encoded strings
+    # First, try to properly parse stream-json lines and extract text content
+    text_contents = []
+    for line in output.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "assistant":
+                for content in msg.get("message", {}).get("content", []):
+                    if content.get("type") == "text":
+                        text_contents.append(content.get("text", ""))
+        except json.JSONDecodeError:
+            continue
+
+    # Search through all text content for JSON blocks
+    for text in reversed(text_contents):  # Most recent first
+        # Find ```json ... ``` blocks (greedy to handle nested braces)
+        matches = re.findall(r"```json\s*(\{.+\})\s*```", text, re.DOTALL)
+        for match in reversed(matches):
+            try:
+                obj = json.loads(match)
+                if required_field in obj:
+                    return obj
+            except json.JSONDecodeError:
+                continue
+
+    # Fallback: try naive text extraction for non-stream-json output
     text = output.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
 
     # Find ```json ... ``` blocks
-    matches = re.findall(r"```json\s*(\{.+?\})\s*```", text, re.DOTALL)
-
-    # Try each match from last to first (most recent is usually most complete)
+    matches = re.findall(r"```json\s*(\{.+\})\s*```", text, re.DOTALL)
     for match in reversed(matches):
         try:
             obj = json.loads(match)
@@ -104,7 +128,7 @@ def extract_json_from_output(output: str, required_field: str = "classification"
         except json.JSONDecodeError:
             continue
 
-    # Fallback: look for raw JSON with required field
+    # Last fallback: look for raw JSON with required field
     pattern = rf'\{{[^{{}}]*"{required_field}"[^{{}}]*\}}'
     matches = re.findall(pattern, text)
     for match in reversed(matches):

@@ -64,9 +64,13 @@ Full research:
             self.error(f"Claude failed: {result.error}")
             return AgentStatus.FAILED, {"error": result.error}
 
-        # Extract JSON output
+        # Extract JSON output - try multiple possible field names
         self.info("Extracting fix results...")
-        data = extract_json_from_output(result.output, "files_changed")
+        data = extract_json_from_output(result.output, "fix_applied")
+        if not data:
+            data = extract_json_from_output(result.output, "files_modified")
+        if not data:
+            data = extract_json_from_output(result.output, "files_changed")
 
         if not data:
             self.warning("Could not extract structured result")
@@ -77,8 +81,15 @@ Full research:
                 "tests_added": [],
             }
 
-        confidence = float(data.get("confidence", 0.5))
-        files_changed = data.get("files_changed", [])
+        # Handle confidence as either dict or float
+        conf_data = data.get("confidence", 0.5)
+        if isinstance(conf_data, dict):
+            confidence = float(conf_data.get("overall", 0.5))
+        else:
+            confidence = float(conf_data)
+
+        # Handle files_changed vs files_modified
+        files_changed = data.get("files_changed") or data.get("files_modified", [])
 
         self.success(f"Fix complete (confidence: {confidence})")
         self.info(f"Files changed: {len(files_changed)}")

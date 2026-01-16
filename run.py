@@ -98,6 +98,20 @@ def main() -> int:
     return 0 if not results["failed"] else 1
 
 
+def cleanup_git_state(git: GitOps, base_branch: str, feature_branch: str) -> None:
+    """Clean up git state - discard changes and return to base branch."""
+    try:
+        # Discard any uncommitted changes
+        git._run("checkout", "--", ".", check=False)
+        git._run("clean", "-fd", check=False)
+        # Return to base branch
+        git._run("checkout", base_branch, check=False)
+        # Delete feature branch
+        git.delete_branch(feature_branch, force=True)
+    except Exception:
+        pass  # Best effort cleanup
+
+
 def process_issue(config: Config, github: GitHubClient, git: GitOps, issue_num: int) -> PipelineStatus:
     """Process a single issue through the pipeline."""
     # Fetch issue details
@@ -131,14 +145,21 @@ def process_issue(config: Config, github: GitHubClient, git: GitOps, issue_num: 
     print(f"[INFO] Preparing git branch...")
 
     try:
-        # Check for dirty working tree
+        # Ensure clean state before starting
         if git.is_dirty():
             print("[ERROR] Working tree has uncommitted changes. Please commit or stash them.")
             return PipelineStatus.FAILED
 
-        # Sync to base branch
-        git.sync_to_remote("origin", config.base_branch)
-        print(f"[SUCCESS] Synced to origin/{config.base_branch}")
+        # Fetch latest and hard reset to ensure we're at latest base branch
+        print(f"[INFO] Fetching latest from origin...")
+        git.fetch("origin")
+
+        # Force checkout to base branch (in case we're on a different branch)
+        git._run("checkout", "-f", config.base_branch, check=True)
+
+        # Hard reset to match remote exactly (discards any local commits)
+        git.reset_hard(f"origin/{config.base_branch}")
+        print(f"[SUCCESS] Reset to origin/{config.base_branch}")
 
         # Close existing PR if any
         existing_pr = github.find_open_pr(branch_name)
@@ -158,18 +179,25 @@ def process_issue(config: Config, github: GitHubClient, git: GitOps, issue_num: 
         print(f"[ERROR] Git error: {e}")
         return PipelineStatus.FAILED
 
-    # Run pipeline
-    print(f"[INFO] Starting multi-agent pipeline...")
-    pipeline = Pipeline(config, issue, run_dir)
-    state = pipeline.run()
+    # Run pipeline with cleanup on any failure
+    try:
+        print(f"[INFO] Starting multi-agent pipeline...")
+        pipeline = Pipeline(config, issue, run_dir)
+        state = pipeline.run()
 
-    # Handle results
-    if state.status == PipelineStatus.SUCCESS:
-        return handle_success(config, github, git, issue, branch_name, state, run_dir)
-    elif state.status == PipelineStatus.SKIPPED:
-        return handle_skip(github, issue, state, run_dir)
-    else:
-        return handle_failure(github, git, issue, branch_name, state)
+        # Handle results
+        if state.status == PipelineStatus.SUCCESS:
+            return handle_success(config, github, git, issue, branch_name, state, run_dir)
+        elif state.status == PipelineStatus.SKIPPED:
+            cleanup_git_state(git, config.base_branch, branch_name)
+            return handle_skip(github, issue, state, run_dir)
+        else:
+            return handle_failure(github, git, issue, branch_name, state, config.base_branch)
+    except Exception as e:
+        # Unexpected error - clean up and re-raise
+        print(f"[ERROR] Unexpected error: {e}")
+        cleanup_git_state(git, config.base_branch, branch_name)
+        raise
 
 
 def handle_success(
@@ -185,23 +213,24 @@ def handle_success(
     print(f"[INFO] Pipeline succeeded, creating PR...")
 
     try:
-        # Check if there are changes to commit
-        if not git.has_changes():
-            print("[WARNING] No changes to commit")
+        # Commit any uncommitted changes (fix agent may or may not have committed)
+        if git.has_changes():
+            git.add(exclude_patterns=[".env", "*.env"])
+            git.commit(
+                f"fix: {issue.title}\n\n"
+                f"Fixes #{issue.number}\n\n"
+                f"Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+            )
+
+        # Check if there are commits to push
+        if not git.has_unpushed_commits("origin", branch_name):
+            print("[WARNING] No commits to push")
             github.add_issue_comment(
                 issue.number,
                 f"Pipeline completed but no code changes were made.\n\n"
                 f"Aggregate confidence: {state.aggregate_confidence}"
             )
             return PipelineStatus.SKIPPED
-
-        # Stage and commit
-        git.add(exclude_patterns=[".env", "*.env"])
-        git.commit(
-            f"fix: {issue.title}\n\n"
-            f"Fixes #{issue.number}\n\n"
-            f"Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-        )
 
         # Push
         git.push("origin", branch_name, set_upstream=True)
@@ -243,13 +272,71 @@ Generated with [Claude Code](https://claude.com/claude-code)
         )
         print(f"[SUCCESS] Created PR: {pr.url}")
 
-        # Comment on issue
-        github.add_issue_comment(
-            issue.number,
-            f"Created auto-fix PR: {pr.url}\n\n"
-            f"Aggregate confidence: {confidence}\n\n"
-            f"Please review before merging."
-        )
+        # Build issue comment with fix summary
+        fix_summary = ""
+        files_changed = []
+
+        # Load fix state to get details
+        fix_state_file = run_dir / "fix.state.json"
+        if fix_state_file.exists():
+            try:
+                with open(fix_state_file) as f:
+                    fix_data = json.load(f)
+                files_changed = fix_data.get("files_changed", [])
+                full_result = fix_data.get("full_result", {})
+                caveats = full_result.get("caveats", [])
+                testing_notes = full_result.get("testing_notes", [])
+
+                if caveats:
+                    fix_summary += "\n**Caveats:**\n"
+                    for caveat in caveats[:3]:  # Limit to 3
+                        fix_summary += f"- {caveat}\n"
+
+                if testing_notes:
+                    fix_summary += "\n**Testing notes:**\n"
+                    for note in testing_notes[:3]:  # Limit to 3
+                        fix_summary += f"- {note}\n"
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Load research state to get root cause
+        root_cause = ""
+        research_state_file = run_dir / "research.state.json"
+        if research_state_file.exists():
+            try:
+                with open(research_state_file) as f:
+                    research_data = json.load(f)
+                rc = research_data.get("root_cause", {})
+                if isinstance(rc, dict):
+                    root_cause = rc.get("description", "")
+                else:
+                    root_cause = str(rc) if rc else ""
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Build the comment
+        files_list = ", ".join(f"`{f}`" for f in files_changed[:5]) if files_changed else "See PR"
+        comment = f"""🤖 **Automated Fix Created**
+
+**PR:** {pr.url}
+
+**Files changed:** {files_list}
+"""
+        if root_cause:
+            comment += f"\n**Root cause:** {root_cause}\n"
+
+        if fix_summary:
+            comment += fix_summary
+
+        comment += f"""
+**Confidence:** {confidence:.0%}
+
+Please review the PR before merging.
+
+---
+*Generated by [STRATO Fix All The Things](https://github.com/strato-net/strato-fix-all-the-things)*"""
+
+        github.add_issue_comment(issue.number, comment)
 
         return PipelineStatus.SUCCESS
 
@@ -258,9 +345,73 @@ Generated with [Claude Code](https://claude.com/claude-code)
         return PipelineStatus.FAILED
 
 
+def handle_fix_no_changes(github: GitHubClient, issue, run_dir: Path) -> PipelineStatus:
+    """Handle case where fix agent completed but made no changes."""
+    print(f"[WARNING] Fix agent made no code changes")
+
+    # Load research and triage data for context
+    research_summary = ""
+    triage_summary = ""
+
+    triage_state_file = run_dir / "triage.state.json"
+    if triage_state_file.exists():
+        try:
+            with open(triage_state_file) as f:
+                triage_data = json.load(f)
+            full_analysis = triage_data.get("full_analysis", {})
+            triage_summary = full_analysis.get("summary", triage_data.get("summary", ""))
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    research_state_file = run_dir / "research.state.json"
+    if research_state_file.exists():
+        try:
+            with open(research_state_file) as f:
+                research_data = json.load(f)
+            research_summary = research_data.get("summary", "")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Build informative comment
+    comment_parts = [
+        "🤖 **Auto-Fix Analysis Complete**\n",
+        "The issue was analyzed and deemed fixable, but the fix agent was unable to make any code changes.\n",
+    ]
+
+    if triage_summary:
+        comment_parts.append(f"\n## Triage Analysis\n{triage_summary}\n")
+
+    if research_summary:
+        comment_parts.append(f"\n## Research Findings\n{research_summary}\n")
+
+    comment_parts.append(
+        "\n## Next Steps\n"
+        "- A human developer should review this issue\n"
+        "- The automated analysis above may provide useful context\n"
+        "- Consider if the issue requires architectural changes beyond simple fixes\n"
+    )
+
+    comment_parts.append(
+        "\n---\n"
+        "*Generated by [STRATO Fix All The Things](https://github.com/strato-net/strato-fix-all-the-things)*"
+    )
+
+    try:
+        github.add_issue_comment(issue.number, "".join(comment_parts))
+    except GitHubError as e:
+        print(f"[WARNING] Failed to comment on issue: {e}")
+
+    return PipelineStatus.SKIPPED
+
+
 def handle_skip(github: GitHubClient, issue, state, run_dir: Path) -> PipelineStatus:
     """Handle skipped pipeline."""
     print(f"[WARNING] Pipeline skipped: {state.failure_reason}")
+
+    # Check if skip happened at fix stage (no changes made)
+    fix_state_file = run_dir / "fix.state.json"
+    if fix_state_file.exists() and "no changes" in state.failure_reason.lower():
+        return handle_fix_no_changes(github, issue, run_dir)
 
     # Load triage analysis for detailed comment
     triage_state_file = run_dir / "triage.state.json"
@@ -349,17 +500,10 @@ def handle_skip(github: GitHubClient, issue, state, run_dir: Path) -> PipelineSt
     return PipelineStatus.SKIPPED
 
 
-def handle_failure(github: GitHubClient, git: GitOps, issue, branch_name: str, state) -> PipelineStatus:
-    """Handle failed pipeline."""
+def handle_failure(github: GitHubClient, git: GitOps, issue, branch_name: str, state, base_branch: str) -> PipelineStatus:
+    """Handle failed or blocked pipeline."""
     print(f"[ERROR] Pipeline failed: {state.failure_reason}")
-
-    # Clean up branch
-    try:
-        git.checkout(git._run("config", "--get", "init.defaultBranch", check=False) or "main")
-        git.delete_branch(branch_name, force=True)
-    except GitError:
-        pass
-
+    cleanup_git_state(git, base_branch, branch_name)
     return PipelineStatus.FAILED
 
 
