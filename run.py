@@ -238,19 +238,12 @@ def handle_success(
 
         # Create PR
         confidence = state.aggregate_confidence
-        labels = []
-        if confidence >= 0.8:
-            labels.append("high-confidence")
-        elif confidence >= 0.6:
-            labels.append("medium-confidence")
-        else:
-            labels.append("low-confidence")
 
         pr_body = f"""## Summary
 Auto-generated fix for issue #{issue.number}
 
 ## Confidence
-- Aggregate: {confidence}
+- Aggregate: {confidence:.0%}
 - Breakdown: {json.dumps(state.confidence_breakdown, indent=2)}
 
 ## Test Plan
@@ -268,7 +261,6 @@ Generated with [Claude Code](https://claude.com/claude-code)
             head=branch_name,
             base=config.base_branch,
             draft=True,
-            labels=labels,
         )
         print(f"[SUCCESS] Created PR: {pr.url}")
 

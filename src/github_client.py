@@ -85,7 +85,6 @@ class GitHubClient:
         head: str,
         base: str,
         draft: bool = True,
-        labels: list[str] | None = None,
     ) -> PullRequest:
         """Create a pull request."""
         args = [
@@ -97,9 +96,6 @@ class GitHubClient:
         ]
         if draft:
             args.append("--draft")
-        if labels:
-            for label in labels:
-                args.extend(["--label", label])
 
         output = self._run_gh(*args)
         # gh pr create outputs the PR URL
