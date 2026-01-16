@@ -167,7 +167,7 @@ def process_issue(config: Config, github: GitHubClient, git: GitOps, issue_num: 
     if state.status == PipelineStatus.SUCCESS:
         return handle_success(config, github, git, issue, branch_name, state, run_dir)
     elif state.status == PipelineStatus.SKIPPED:
-        return handle_skip(github, issue, state)
+        return handle_skip(github, issue, state, run_dir)
     else:
         return handle_failure(github, git, issue, branch_name, state)
 
@@ -258,16 +258,51 @@ Generated with [Claude Code](https://claude.com/claude-code)
         return PipelineStatus.FAILED
 
 
-def handle_skip(github: GitHubClient, issue, state) -> PipelineStatus:
+def handle_skip(github: GitHubClient, issue, state, run_dir: Path) -> PipelineStatus:
     """Handle skipped pipeline."""
     print(f"[WARNING] Pipeline skipped: {state.failure_reason}")
+
+    # Load triage analysis for detailed comment
+    triage_state_file = run_dir / "triage.state.json"
+    analysis_summary = ""
+    if triage_state_file.exists():
+        try:
+            with open(triage_state_file) as f:
+                triage_data = json.load(f)
+
+            full_analysis = triage_data.get("full_analysis", {})
+            summary = full_analysis.get("summary", triage_data.get("summary", ""))
+            reasoning = full_analysis.get("reasoning", "")
+            risks = full_analysis.get("risks", [])
+            suggested_approach = full_analysis.get("suggested_approach", "")
+            questions = full_analysis.get("questions_if_unclear", [])
+
+            analysis_summary = f"""
+## Analysis Summary
+
+**Summary:** {summary}
+
+**Reasoning:** {reasoning}
+
+**Risks:**
+{chr(10).join(f"- {r}" for r in risks) if risks else "- None identified"}
+
+**Suggested Approach:** {suggested_approach}
+
+**Questions for Clarification:**
+{chr(10).join(f"- {q}" for q in questions) if questions else "- None"}
+"""
+        except (json.JSONDecodeError, KeyError):
+            pass
 
     try:
         github.add_issue_comment(
             issue.number,
             f"This issue was analyzed but cannot be auto-fixed.\n\n"
-            f"**Reason:** {state.failure_reason}\n\n"
-            f"Manual review is required."
+            f"**Classification:** {state.failure_reason}\n"
+            f"{analysis_summary}\n"
+            f"---\n"
+            f"*Manual review is required.*"
         )
     except GitHubError as e:
         print(f"[WARNING] Failed to comment on issue: {e}")
