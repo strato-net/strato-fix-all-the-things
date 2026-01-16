@@ -57,6 +57,7 @@ run_claude() {
 
     timeout "$timeout_sec" claude \
         --dangerously-skip-permissions \
+        --verbose \
         --output-format stream-json \
         -p "$prompt" 2>&1 | tee "$output_file"
 
