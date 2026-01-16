@@ -47,42 +47,48 @@ agent_log INFO "Extracting triage results..."
 
 # The JSON is embedded in stream-json output. Claude outputs it in markdown code blocks.
 # We use Python for reliable JSON extraction since bash regex is fragile for nested JSON.
-TRIAGE_JSON=$(python3 -c "
+# Using a heredoc to avoid bash escaping issues with backticks and quotes
+TRIAGE_JSON=$(python3 - "$LOG_FILE" << 'PYEOF'
 import sys
 import json
 import re
 
-log = open('$LOG_FILE', 'r', errors='ignore').read()
+log_file = sys.argv[1]
+log = open(log_file, "r", errors="ignore").read()
 
-# Unescape the JSON-encoded strings
-log = log.replace('\\\\n', '\n').replace('\\\\\"', '\"').replace('\\\\\\\\', '\\\\')
+# Unescape the JSON-encoded strings from stream-json
+log = log.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\")
 
 # Find JSON blocks with classification field
-# Look for ```json ... ``` blocks first
-matches = re.findall(r'\`\`\`json\s*(\{[^$]+?\})\s*\`\`\`', log, re.DOTALL)
+# Look for ```json ... ``` blocks first - use .+? for non-greedy match
+matches = re.findall(r"```json\s*(\{.+?\})\s*```", log, re.DOTALL)
 
-for match in reversed(matches):  # Start from last match
+for match in reversed(matches):  # Start from last match (most complete)
     try:
         obj = json.loads(match)
-        if 'classification' in obj:
+        if "classification" in obj:
             print(json.dumps(obj))
             sys.exit(0)
     except:
         pass
 
 # Fallback: look for raw JSON object with classification
-matches = re.findall(r'\{[^{}]*\"classification\"[^{}]*\}', log)
+matches = re.findall(r'\{[^{}]*"classification"[^{}]*\}', log)
 for match in reversed(matches):
     try:
         obj = json.loads(match)
-        if 'classification' in obj:
+        if "classification" in obj:
             print(json.dumps(obj))
             sys.exit(0)
     except:
         pass
 
-print('')
-" 2>/dev/null || echo "")
+print("")
+PYEOF
+)
+
+# Take only the first line in case of duplicate output (can happen with heredoc + command substitution)
+TRIAGE_JSON=$(echo "$TRIAGE_JSON" | head -1)
 
 if [ -z "$TRIAGE_JSON" ] || ! echo "$TRIAGE_JSON" | jq -e '.classification' &>/dev/null; then
     agent_log WARNING "Could not extract structured triage result, defaulting to NEEDS_CLARIFICATION"
